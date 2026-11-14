@@ -5,8 +5,10 @@
 #
 # [화면 구성]
 #   탭 1 "결과 해석" : 안전 안내 -> 시연 버튼 -> 입력칸 -> 결과 보기/모두 지우기
-#                      -> 결과 요약 -> 결과 카드(판정 + 내 수치 위치 막대) -> 출처·한계·저장 안내
-#   탭 2 "검증 결과" : test_criteria.py의 자동 검사 결과를 표로 보여 줌
+#                      -> 결과 요약 -> 결과 카드(판정 + 내 수치 위치 막대) -> 대사증후군 체크
+#                      -> "수치가 달라지면?" 체험 -> 결과 파일 다운로드 -> 용어 사전
+#                      -> 출처·한계·저장 안내
+#   탭 2 "검증 결과" : 검증 방법 안내 + test_criteria.py의 자동 검사 결과를 표로 보여 줌
 #
 # [Streamlit이 동작하는 방식 - 꼭 알아 두기]
 #   버튼을 누르거나 값을 바꿀 때마다 이 파일이 "위에서 아래로 처음부터 다시" 실행됩니다.
@@ -78,23 +80,24 @@ NUMBER_KEYS = ["age", "height", "weight", "waist", "sbp", "dbp",
 # 혈당·지질 칸도 소수점을 받아야 mmol/L 값(예: 5.5)을 그대로 인식해 단위 착오를 안내할 수 있습니다.
 DECIMAL_KEYS = ["height", "weight", "waist", "glucose", "tc", "ldl", "hdl", "tg"]
 
-# 시연용 가상 수치 (임시). 나중에 이 딕셔너리만 바꾸면 됩니다.
+# 시연용 가상 수치 (팀의 [예시수치] 표). 나중에 이 딕셔너리만 바꾸면 됩니다.
 # ※ 소수점 칸(키·몸무게·허리·혈당·지질)은 170.0처럼 소수로, 나머지(나이·혈압)는 정수로 적어야 합니다.
+# ※ 표의 "임신 중"은 모두 "아니오"입니다. 예시를 불러오면 임신 체크가 해제됩니다(load_example).
 EXAMPLES = {
     "정상 예시": {
-        "sex": "남", "age": 40, "height": 170.0, "weight": 63.0, "waist": 80.0,
-        "sbp": 115, "dbp": 75, "glucose": 90.0,
-        "tc": 180.0, "ldl": 100.0, "hdl": 55.0, "tg": 100.0,
+        "sex": "남", "age": 35, "height": 175.0, "weight": 68.0, "waist": 82.0,
+        "sbp": 116, "dbp": 74, "glucose": 88.0,
+        "tc": 175.0, "ldl": 95.0, "hdl": 58.0, "tg": 90.0,
     },
     "주의 예시": {
-        "sex": "여", "age": 50, "height": 160.0, "weight": 61.5, "waist": 88.0,
-        "sbp": 130, "dbp": 85, "glucose": 110.0,
-        "tc": 220.0, "ldl": 145.0, "hdl": 45.0, "tg": 170.0,
+        "sex": "여", "age": 52, "height": 158.0, "weight": 60.0, "waist": 87.0,
+        "sbp": 128, "dbp": 82, "glucose": 108.0,
+        "tc": 215.0, "ldl": 142.0, "hdl": 52.0, "tg": 165.0,
     },
     "위험 예시": {
-        "sex": "남", "age": 60, "height": 170.0, "weight": 80.0, "waist": 95.0,
-        "sbp": 150, "dbp": 95, "glucose": 140.0,
-        "tc": 260.0, "ldl": 170.0, "hdl": 35.0, "tg": 250.0,
+        "sex": "남", "age": 63, "height": 170.0, "weight": 82.0, "waist": 98.0,
+        "sbp": 185, "dbp": 112, "glucose": 145.0,
+        "tc": 265.0, "ldl": 195.0, "hdl": 36.0, "tg": 280.0,
     },
 }
 
@@ -240,8 +243,18 @@ def show_card(key, result, value_text, extra="", bars=None):
     # 설명과 팁 (criteria.TEXTS에서 가져옴)
     text = criteria.TEXTS[key].get(result["sub_label"])
     if text:
-        lines.append(f"설명: {text['explain']}")
-        lines.append(f"생활습관 팁: {text['tip']}")
+        explain = text["explain"]
+        # 빠른 진료(urgent)일 때는 빠른 진료 설명을 설명 뒤에 덧붙입니다.
+        # (혈압 180/110 이상, LDL 190 이상, 중성지방 500 이상)
+        urgent_text = criteria.TEXTS["urgent"].get(key)
+        if result["urgent"] and urgent_text:
+            explain += " " + urgent_text["explain"]
+        lines.append(f"설명: {explain}")
+        # 생활습관 팁: urgent일 때는 빠른 진료용 팁을 대신 보여 줍니다.
+        tip = text["tip"]
+        if result["urgent"] and urgent_text:
+            tip = urgent_text["tip"]
+        lines.append(f"생활습관 팁: {tip}")
 
     # 다음 행동: urgent가 가장 우선, 그다음 주의/위험
     # (정상일 때의 다음 행동 문구는 아직 정해지지 않아 표시하지 않습니다)
@@ -301,6 +314,236 @@ def show_summary(box, judged):
             st.markdown("\n\n".join(lines))
 
 
+def show_mets(result):
+    """
+    대사증후군 체크 카드를 보여 줍니다. (결과 카드들 아래)
+      result : criteria.judge_mets()가 돌려준 dict
+    결과 요약(정상·주의·위험 개수)에는 세지 않습니다.
+    """
+    # 판정 글자: 판정 불가일 때만 입력된 기준 개수를 붙입니다.
+    label = result["label"]
+    if result["status"] == "판정 불가":
+        label += f"(입력 {result['known_count']}/5개)"
+
+    lines = [
+        "**대사증후군 체크**",
+        f"판정: **{label}**",
+        f"해당 개수: **{result['met_count']}/5**",
+    ]
+
+    # 기준 5개 각각의 결과
+    marks = {True: "해당", False: "해당 없음", None: "입력 안 됨"}
+    for ch in result["checks"]:
+        lines.append(f"- {ch['name']} ({ch['rule']}): **{marks[ch['met']]}**")
+
+    # 설명과 팁 (criteria.TEXTS["metabolic"]의 문구 그대로)
+    text = criteria.TEXTS["metabolic"][result["status"]]
+    lines.append(f"설명: {text['explain']}")
+    lines.append(f"생활습관 팁: {text['tip']}")
+
+    body = escape("\n\n".join(lines))
+
+    with st.container(border=True):
+        # 의심=노랑, 아님=초록, 판정 불가=파랑(안내)
+        if result["status"] == "의심":
+            st.warning(body)
+        elif result["status"] == "아님":
+            st.success(body)
+        else:
+            st.info(body)
+        st.caption("원래 기준은 혈압·혈당·지질 약을 복용 중이면 해당으로 셉니다. "
+                   "이 도구는 복용 약을 반영하지 않습니다.")
+        st.caption("HDL 기준이 위 카드와 다른 이유: 대사증후군 기준은 여성에게 50 미만을 적용합니다.")
+
+
+def make_report_html(report_rows, judged, mets):
+    """
+    결과 파일(검진결과_해석.html)의 내용을 글자로 만듭니다.
+    파일은 서버나 컴퓨터에 저장하지 않고, 버튼을 누른 사람에게만 내려받게 합니다.
+    성별·나이는 넣지 않습니다. (개인정보 최소화)
+    """
+    e = html.escape   # 글자를 HTML에 안전하게 넣는 도구
+    count = {"normal": 0, "caution": 0, "danger": 0}
+    for r in judged:
+        count[r["level"]] += 1
+    now = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
+
+    # 판정 결과 표
+    rows = []
+    for key, r in report_rows:
+        value = r["value"]
+        if isinstance(value, tuple):
+            value_text = f"{fmt(value[0])}/{fmt(value[1])}"
+        elif key == "bmi":
+            value_text = f"{value:.1f}"
+        else:
+            value_text = fmt(value)
+        unit = criteria.CRITERIA[key]["unit"]
+        judge_text = f"{r['label']} ({r['sub_label']})"
+        if r["urgent"]:
+            judge_text += " · 가능한 빨리 진료 권장"
+        rows.append(f"<tr><td>{e(r['item'])}</td><td>{e(value_text)} {e(unit)}</td>"
+                    f"<td class='{r['level']}'>{e(judge_text)}</td></tr>")
+
+    # 먼저 확인할 항목
+    urgent_items = [r["item"] for r in judged if r["urgent"]]
+    danger_items = [r["item"] for r in judged if r["level"] == "danger"]
+    first = ""
+    if urgent_items:
+        first = "먼저 확인할 항목: " + ", ".join(urgent_items) + " (가능한 빨리 진료 권장 수치)"
+    elif danger_items:
+        first = "먼저 확인할 항목: " + ", ".join(danger_items) + " (위험 범위에 해당하는 수치)"
+
+    # 대사증후군
+    mets_html = ""
+    if mets is not None:
+        label = mets["label"]
+        if mets["status"] == "판정 불가":
+            label += f"(입력 {mets['known_count']}/5개)"
+        marks = {True: "해당", False: "해당 없음", None: "입력 안 됨"}
+        items = "".join(f"<li>{e(ch['name'])} ({e(ch['rule'])}): {marks[ch['met']]}</li>"
+                        for ch in mets["checks"])
+        mets_html = (f"<h2>대사증후군 체크</h2><p>판정: <b>{e(label)}</b> · 해당 {mets['met_count']}/5</p>"
+                     f"<ul>{items}</ul>"
+                     "<p class='small'>원래 기준은 혈압·혈당·지질 약을 복용 중이면 해당으로 셉니다. "
+                     "이 도구는 복용 약을 반영하지 않습니다.</p>")
+
+    # 출처
+    sources = []
+    for item in criteria.CRITERIA.values():
+        if item["source"] not in sources:
+            sources.append(item["source"])
+    source_html = "".join(f"<li>{e(src)}</li>" for src in sources)
+
+    return f"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>건강검진 결과 해석</title>
+<style>
+  @page {{ size: A4; margin: 14mm; }}
+  body {{ font-family: sans-serif; font-size: 11pt; color: #000; line-height: 1.45;
+          -webkit-print-color-adjust: exact; print-color-adjust: exact; }}  /* 인쇄할 때도 배경색 유지 */
+  h1 {{ font-size: 16pt; margin: 0 0 4px; }}
+  h2 {{ font-size: 12pt; margin: 14px 0 4px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th, td {{ border: 1px solid #555; padding: 4px 6px; text-align: left; }}
+  th {{ background: #eee; }}
+  td.normal {{ background: #e6f4ea; }}
+  td.caution {{ background: #fff4d6; font-weight: bold; }}
+  td.danger {{ background: #fde2e1; font-weight: bold; }}
+  .box {{ border: 1px solid #555; padding: 6px 8px; margin: 8px 0; }}
+  .small {{ font-size: 9pt; }}
+  ul {{ margin: 4px 0; padding-left: 18px; }}
+</style></head><body>
+<h1>건강검진 결과 해석 (교육용)</h1>
+<p class="small">만든 날짜: {now} (한국 시간)</p>
+<div class="box"><b>결과 요약</b>: 정상 {count['normal']}개 · 주의 {count['caution']}개 · 위험 {count['danger']}개<br>{e(first)}</div>
+<h2>판정 결과</h2>
+<table><tr><th>항목</th><th>내 수치</th><th>판정</th></tr>{''.join(rows)}</table>
+{mets_html}
+<div class="box"><b>안전 안내</b><br>이 도구는 교육용이며 의학적 진단을 대신하지 않습니다.
+한 번의 측정값만으로 판정하므로 실제 진단과 다를 수 있으며, 공복 여부와 복용 중인 약은 반영하지 않습니다.
+19세 미만, 임산부에게는 적용할 수 없습니다.</div>
+<h2>판정 기준 출처</h2><ul class="small">{source_html}</ul>
+</body></html>"""
+
+
+# "수치가 달라지면?" 체험에서 고를 수 있는 항목
+#   이름: (슬라이더로 바꿀 입력칸들, 판정 함수, 위치 막대 이름들)
+#   BMI는 키를 그대로 두고 몸무게만 바꿉니다. 허리둘레는 체험에 넣지 않습니다.
+SIM_ITEMS = {
+    "BMI (몸무게)":     (["weight"],       "bmi",     ["bmi"]),
+    "혈압":             (["sbp", "dbp"],   "bp",      ["sbp", "dbp"]),
+    "공복혈당":         (["glucose"],      "glucose", ["glucose"]),
+    "총콜레스테롤":     (["tc"],           "tc",      ["tc"]),
+    "LDL 콜레스테롤":   (["ldl"],          "ldl",     ["ldl"]),
+    "HDL 콜레스테롤":   (["hdl"],          "hdl",     ["hdl"]),
+    "중성지방":         (["tg"],           "tg",      ["tg"]),
+}
+
+# 판정에 쓰는 criteria의 기존 판정 함수 (새 기준 숫자 없음)
+SIM_JUDGES = {
+    "bmi": criteria.judge_bmi, "bp": criteria.judge_bp, "glucose": criteria.judge_glucose,
+    "tc": criteria.judge_tc, "ldl": criteria.judge_ldl, "hdl": criteria.judge_hdl,
+    "tg": criteria.judge_tg,
+}
+
+
+def show_simulator(s, status):
+    """
+    "수치가 달라지면 판정이 어떻게 바뀔까요?" 체험 상자를 보여 줍니다.
+      s      : st.session_state (입력값)
+      status : 입력칸별 검사 결과 ("ok"인 칸만 체험에 씀)
+    - 슬라이더 값은 sim_로 시작하는 별도 이름에 보관하므로
+      위쪽 입력칸과 결과 카드는 바뀌지 않습니다.
+    - 판정은 criteria의 judge 함수, 막대는 criteria.position_info를 그대로 씁니다.
+    """
+    # 입력(검사 통과)한 항목만 선택지에 넣습니다. BMI는 키도 있어야 합니다.
+    options = []
+    for name, (fields, _, _) in SIM_ITEMS.items():
+        needed = fields + (["height"] if name.startswith("BMI") else [])
+        if all(status[f] == "ok" for f in needed):
+            options.append(name)
+    if not options:
+        return   # 체험할 항목이 없으면 상자를 보여 주지 않음
+
+    with st.expander("수치가 달라지면 판정이 어떻게 바뀔까요?"):
+        st.info("판정 기준이 어디서 바뀌는지 이해하기 위한 체험입니다. 목표나 치료 계획이 아닙니다.")
+        choice = st.selectbox("항목 고르기", options, key="sim_item")
+        fields, judge_key, bar_names = SIM_ITEMS[choice]
+
+        # ---- 슬라이더: 시작값 = 내가 입력한 값, 범위 = 위치 막대의 양 끝 ----
+        sim = {}
+        for f in fields:
+            mine = float(s[f])
+            if f == "weight":
+                info = criteria.position_info("bmi", (s["height"], mine))
+                low, high, step, unit = info["weight_min"], info["weight_max"], 0.1, "kg"
+            else:
+                info = criteria.position_info(f, mine)
+                low, high, unit = info["bar_min"], info["bar_max"], info["unit"]
+                step = 1.0
+            # 내 값이 막대 끝보다 바깥이면, 슬라이더에서도 고를 수 있게 범위를 넓힘
+            low, high = min(low, mine), max(high, mine)
+            label = f"{criteria.LIMITS[f]['name']} ({unit}) · 내가 입력한 값 {fmt(mine)}"
+            # 이름에 내 입력값을 넣어, 입력값이 바뀌면 슬라이더도 새로 시작하게 함
+            sim[f] = st.slider(label, min_value=float(low), max_value=float(high),
+                               value=mine, step=step, key=f"sim_{f}_{mine}")
+
+        # ---- 판정: criteria의 판정 함수 그대로 ----
+        if judge_key == "bmi":
+            result = SIM_JUDGES["bmi"](s["height"], sim["weight"])
+            shown_value = f"BMI {result['value']:.1f} (키 {fmt(s['height'])}cm, 몸무게 {fmt(sim['weight'])}kg)"
+            bars = [criteria.position_info("bmi", (s["height"], sim["weight"]))]
+        elif judge_key == "bp":
+            # 이완기가 수축기보다 크거나 같으면 실제 입력에서도 오류이므로 판정하지 않음
+            check = criteria.validate_input("dbp", sim["dbp"], systolic=sim["sbp"])
+            if check != "ok":
+                st.markdown(f"**체험 값: {fmt(sim['sbp'])}/{fmt(sim['dbp'])} mmHg**\n\n{escape(check)}")
+                return
+            result = SIM_JUDGES["bp"](sim["sbp"], sim["dbp"])
+            shown_value = f"{fmt(sim['sbp'])}/{fmt(sim['dbp'])} mmHg"
+            bars = [criteria.position_info("sbp", sim["sbp"]),
+                    criteria.position_info("dbp", sim["dbp"])]
+        else:
+            f = fields[0]
+            result = SIM_JUDGES[judge_key](sim[f])
+            shown_value = f"{fmt(sim[f])} {criteria.CRITERIA[judge_key]['unit']}"
+            bars = [criteria.position_info(f, sim[f])]
+
+        line = f"체험 값 **{shown_value}** → 판정 **{result['label']}** ({result['sub_label']})"
+        if result["urgent"]:
+            line += " · 빠른 진료 권장 범위"
+        st.markdown(escape(line))
+
+        # 위치 막대: 결과 카드와 같은 그림 함수.
+        # 체험에서는 "경계까지 차이" 문구를 빼서 목표 수치처럼 보이지 않게 합니다.
+        bars = [dict(b, gap_text=None) for b in bars if b is not None]
+        for info in bars:
+            st.markdown(position_bar_html(info, show_title=len(bars) > 1),
+                        unsafe_allow_html=True)
+        st.caption("판정 글자와 막대만 바뀌며, 위쪽 입력칸과 결과 카드는 그대로입니다.")
+
+
 def show_all_results():
     """입력한 항목만 골라 판정하고 카드를 보여 줍니다."""
     s = st.session_state   # 짧게 쓰려고 이름을 붙임
@@ -329,11 +572,13 @@ def show_all_results():
     # 카드를 모두 그린 뒤에 내용을 채웁니다.
     summary_box = st.container()
     judged = []   # 판정된 결과(정상/주의/위험)를 모아 두는 목록
+    report_rows = []   # 결과 파일용: (항목 key, 판정 결과) 묶음
 
     def record_card(key, result, *args, **kwargs):
-        """카드를 그리면서, 판정된 결과는 요약용 목록에도 넣습니다."""
+        """카드를 그리면서, 판정된 결과는 요약용 목록과 결과 파일용 목록에도 넣습니다."""
         if result["level"] is not None:
             judged.append(result)
+            report_rows.append((key, result))
         show_card(key, result, *args, **kwargs)
 
     def show_pair(key, k1, k2, judge):
@@ -396,13 +641,52 @@ def show_all_results():
     if shown == 0:
         st.info("판정할 수치를 하나 이상 입력해 주세요.")
 
+    # (6-1) 대사증후군 체크: 결과 카드 아래에 (수치를 하나라도 입력했을 때만)
+    #       빈칸·입력 오류 값은 judge_mets 안에서 "입력 안 된 것"으로 처리합니다.
+    mets = None
+    if shown > 0:
+        mets = criteria.judge_mets(s["waist"], s["sbp"], s["dbp"],
+                                   s["glucose"], s["tg"], s["hdl"], sex)
+        # 대사증후군 기준 5개 중 하나도 확인할 수 없으면(빈칸·입력 오류뿐) 카드를 숨깁니다.
+        if mets["known_count"] > 0:
+            show_mets(mets)
+        else:
+            mets = None
+
+    # (6-2) "수치가 달라지면?" 체험 (대사증후군 카드 다음)
+    if judged:
+        show_simulator(s, status)
+
     # (7) 결과 요약 채우기 (판정된 항목이 있을 때만)
     if judged:
         show_summary(summary_box, judged)
 
+    # (8) 결과 파일 다운로드 버튼 (판정된 항목이 있을 때만)
+    if judged:
+        st.download_button(
+            "결과 파일 다운로드",
+            data=make_report_html(report_rows, judged, mets),
+            file_name="검진결과_해석.html",
+            mime="text/html",
+            width="stretch",
+        )
+        st.caption("내려받은 파일을 크롬이나 엣지로 열고 Ctrl+P를 누르면 인쇄하거나 PDF로 저장할 수 있습니다. "
+                   "성별·나이는 파일에 넣지 않습니다.")
+
+
+# 입력칸마다 연결할 용어 (도움말 ? 아이콘에 criteria.GLOSSARY 설명을 보여 줌)
+# 나이는 맞는 용어가 없어 도움말이 없습니다.
+HELP_TERMS = {
+    "height": "BMI", "weight": "BMI", "waist": "복부비만",
+    "sbp": "수축기 혈압", "dbp": "이완기 혈압", "glucose": "공복혈당",
+    "tc": "총콜레스테롤", "ldl": "LDL 콜레스테롤", "hdl": "HDL 콜레스테롤", "tg": "중성지방",
+}
+
 
 def number_box(key):
     """숫자 입력칸 1개를 만듭니다. 범위 검사는 criteria.validate_input이 합니다."""
+    term = HELP_TERMS.get(key)
+    help_text = f"{term}: {criteria.GLOSSARY[term]}" if term in criteria.GLOSSARY else None
     # 나이는 이용 대상(19세 이상) 확인에 꼭 필요하므로 "필수"로 표시합니다.
     # 나머지 칸은 비워 두면 그 항목만 판정하지 않습니다.
     if key == "age":
@@ -414,10 +698,10 @@ def number_box(key):
 
     if key in DECIMAL_KEYS:
         st.number_input(label, value=None, step=0.1, format="%.1f",
-                        key=key, placeholder=placeholder)
+                        key=key, placeholder=placeholder, help=help_text)
     else:
         st.number_input(label, value=None, step=1,
-                        key=key, placeholder=placeholder)
+                        key=key, placeholder=placeholder, help=help_text)
 
 
 # =====================================================================
@@ -478,6 +762,11 @@ with tab_result:
         st.subheader("결과")
         show_all_results()
 
+    # 6-5-1. 용어 사전 (항상 보임)
+    with st.expander("용어 사전"):
+        for term, explain in criteria.GLOSSARY.items():
+            st.markdown(f"**{term}**  \n{escape(explain)}")
+
     # 6-6. 출처, 한계, 저장 안내
     st.divider()
     st.subheader("판정 기준 출처")
@@ -498,6 +787,11 @@ with tab_result:
 
 # ---------------- 탭 2: 검증 결과 ----------------
 with tab_check:
+    # 검증 방법 안내 (통과 개수 위)
+    st.markdown("이 앱의 판정 기준은 학회 진료지침 원문에서 가져왔습니다. "
+                "정답표는 코드와 별도로 지침만 보고 만들었고, "
+                "아래 표는 그 정답과 프로그램의 판정을 자동으로 비교한 결과입니다.")
+
     # 화면이 다시 그려질 때마다 검사를 새로 실행합니다. (파일로 저장하지 않음)
     results = test_criteria.run_tests()
     total = len(results)

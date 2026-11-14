@@ -4,10 +4,11 @@
 # 기준값과 판정 규칙은 모두 criteria.py에 있고, 이 파일은 화면만 담당합니다.
 #
 # [화면 구성]
-#   탭 1 "결과 해석" : 안전 안내 -> 시연 버튼 -> 입력칸 -> 결과 보기/모두 지우기
-#                      -> 결과 요약 -> 결과 카드(판정 + 내 수치 위치 막대) -> 대사증후군 체크
-#                      -> "수치가 달라지면?" 체험 -> 결과 파일 다운로드 -> 용어 사전
-#                      -> 출처·한계·저장 안내
+#   탭 1 "결과 해석" : 안전 안내 -> 사용 방법 -> 시연 버튼 -> 입력칸(공복 안내·공복 아님 체크 포함)
+#                      -> 결과 보기/모두 지우기 -> 판정 근거 보기 체크 -> 결과 요약
+#                      -> 결과 카드(판정 + 내 수치 위치 막대) -> 대사증후군 체크
+#                      -> "수치가 달라지면?" 체험 -> 의료진용 한 줄 요약 -> 결과 파일 다운로드
+#                      -> 용어 사전 -> 출처·한계·저장 안내
 #   탭 2 "검증 결과" : 검증 방법 안내 + test_criteria.py의 자동 검사 결과를 표로 보여 줌
 #
 # [Streamlit이 동작하는 방식 - 꼭 알아 두기]
@@ -124,6 +125,7 @@ def load_example(name):
     example = EXAMPLES[name]
     st.session_state["sex"] = example["sex"]
     st.session_state.pop("pregnant", None)   # 임신 체크는 해제 상태로
+    st.session_state.pop("not_fasting", None)  # 공복 아님 체크도 해제
     for k in NUMBER_KEYS:
         st.session_state[k] = example[k]
     st.session_state["show_result"] = False  # 결과는 "결과 보기"를 눌러야 나옴
@@ -133,6 +135,7 @@ def clear_all():
     """모든 입력칸을 비우고 결과를 숨깁니다."""
     st.session_state["sex"] = None
     st.session_state.pop("pregnant", None)
+    st.session_state.pop("not_fasting", None)
     for k in NUMBER_KEYS:
         st.session_state[k] = None
     st.session_state["show_result"] = False
@@ -160,10 +163,15 @@ def escape(text):
     return text.replace("~", "\\~")
 
 
+# 결과지에 약어로 적히는 경우가 많은 항목은 약어를 함께 보여 줍니다.
+ABBR = {"glucose": "FBS", "tc": "TC", "ldl": "LDL-C", "hdl": "HDL-C", "tg": "TG"}
+
+
 def input_label(key):
-    """입력칸 이름에 단위를 붙입니다. 예) "키 (cm)" """
+    """입력칸 이름에 약어와 단위를 붙입니다. 예) "공복혈당 · FBS (mg/dL)" """
     limit = criteria.LIMITS[key]
-    return f"{limit['name']} ({limit['unit']})"
+    abbr = f" · {ABBR[key]}" if key in ABBR else ""
+    return f"{limit['name']}{abbr} ({limit['unit']})"
 
 
 def show_error(key, message):
@@ -234,7 +242,7 @@ def show_card(key, result, value_text, extra="", bars=None):
 
     # 빨리 진료가 필요한 수치면 카드 맨 앞에 굵게
     if result["urgent"]:
-        lines.append("**가능한 빨리 진료 권장**")
+        lines.append("**가능한 한 빨리 진료 권장**")
 
     lines.append(f"**{result['item']}**")
     lines.append(f"내 수치: **{value_text} {unit}**{extra}")
@@ -257,7 +265,6 @@ def show_card(key, result, value_text, extra="", bars=None):
         lines.append(f"생활습관 팁: {tip}")
 
     # 다음 행동: urgent가 가장 우선, 그다음 주의/위험
-    # (정상일 때의 다음 행동 문구는 아직 정해지지 않아 표시하지 않습니다)
     next_actions = criteria.TEXTS["next_action"]
     if result["urgent"]:
         lines.append(f"다음 행동: {next_actions['urgent']}")
@@ -285,6 +292,18 @@ def show_card(key, result, value_text, extra="", bars=None):
             st.caption("▼ 표시는 판정 기준 구간에서 내 수치의 위치이며, 다른 사람과 비교한 순위가 아닙니다. "
                        "막대의 구간 너비는 보기 쉽게 같은 크기로 그렸습니다.")
 
+        # 공복이 아닌 상태라고 체크했으면 공복혈당·중성지방·LDL 카드에 안내 (판정은 그대로)
+        if st.session_state.get("not_fasting") and key in criteria.FASTING_NOTE:
+            st.caption(f"**⚠ {criteria.FASTING_NOTE[key]}**")
+
+        # LDL은 개인 위험도를 반영하지 않는다는 안내 (늘 표시)
+        if key == "ldl":
+            st.caption(criteria.LDL_RISK_NOTE)
+
+        # 판정 근거 (화면에서 "판정 근거 함께 보기"를 켰을 때만)
+        if st.session_state.get("show_basis") and key in criteria.BASIS:
+            st.caption(f"판정 근거: {criteria.BASIS[key]}")
+
 
 def show_summary(box, judged):
     """
@@ -304,7 +323,7 @@ def show_summary(box, judged):
     danger_items = [r["item"] for r in judged if r["level"] == "danger"]
     if urgent_items:
         lines.append("**먼저 확인할 항목**: " + ", ".join(urgent_items)
-                     + " (가능한 빨리 진료 권장 수치)")
+                     + " (가능한 한 빨리 진료 권장 수치)")
     elif danger_items:
         lines.append("**먼저 확인할 항목**: " + ", ".join(danger_items)
                      + " (위험 범위에 해당하는 수치)")
@@ -354,6 +373,40 @@ def show_mets(result):
         st.caption("원래 기준은 혈압·혈당·지질 약을 복용 중이면 해당으로 셉니다. "
                    "이 도구는 복용 약을 반영하지 않습니다.")
         st.caption("HDL 기준이 위 카드와 다른 이유: 대사증후군 기준은 여성에게 50 미만을 적용합니다.")
+        if st.session_state.get("not_fasting"):
+            st.caption(f"**⚠ {criteria.FASTING_NOTE['mets']}**")
+        if st.session_state.get("show_basis"):
+            st.caption(f"판정 근거: {criteria.BASIS['mets']}")
+
+
+# 의료진용 한 줄 요약에 쓰는 약어 (결과지·진료 기록에서 흔히 쓰는 표기)
+SHORT_NAMES = {"bmi": "BMI", "waist": "WC", "bp": "BP", "glucose": "FBS",
+               "tc": "TC", "ldl": "LDL-C", "hdl": "HDL-C", "tg": "TG"}
+
+
+def make_clinician_line(report_rows, mets):
+    """
+    의료진용 한 줄 요약을 만듭니다.
+    예) BMI 24.0 | WC 87cm | BP 128/82 | FBS 108 | TC 215 | LDL-C 142 | HDL-C 52 | TG 165 | MetS 3/5
+    판정된 항목의 수치만 넣고, 성별·나이는 넣지 않습니다.
+    """
+    parts = []
+    for key, r in report_rows:
+        value = r["value"]
+        if isinstance(value, tuple):
+            text = f"{fmt(value[0])}/{fmt(value[1])}"
+        elif key == "bmi":
+            text = f"{value:.1f}"
+        elif key == "waist":
+            text = f"{fmt(value)}cm"
+        else:
+            text = fmt(value)
+        parts.append(f"{SHORT_NAMES[key]} {text}")
+    if mets is not None:
+        parts.append(f"MetS {mets['met_count']}/5")
+    if st.session_state.get("not_fasting"):
+        parts.append("비공복")
+    return " | ".join(parts)
 
 
 def make_report_html(report_rows, judged, mets):
@@ -367,6 +420,8 @@ def make_report_html(report_rows, judged, mets):
     for r in judged:
         count[r["level"]] += 1
     now = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
+    # 공복이 아닌 상태라고 체크했으면 파일에도 표시
+    fasting_line = " · <b>공복이 아닌 상태에서 검사함</b>" if st.session_state.get("not_fasting") else ""
 
     # 판정 결과 표
     rows = []
@@ -381,7 +436,7 @@ def make_report_html(report_rows, judged, mets):
         unit = criteria.CRITERIA[key]["unit"]
         judge_text = f"{r['label']} ({r['sub_label']})"
         if r["urgent"]:
-            judge_text += " · 가능한 빨리 진료 권장"
+            judge_text += " · 가능한 한 빨리 진료 권장"
         rows.append(f"<tr><td>{e(r['item'])}</td><td>{e(value_text)} {e(unit)}</td>"
                     f"<td class='{r['level']}'>{e(judge_text)}</td></tr>")
 
@@ -390,7 +445,7 @@ def make_report_html(report_rows, judged, mets):
     danger_items = [r["item"] for r in judged if r["level"] == "danger"]
     first = ""
     if urgent_items:
-        first = "먼저 확인할 항목: " + ", ".join(urgent_items) + " (가능한 빨리 진료 권장 수치)"
+        first = "먼저 확인할 항목: " + ", ".join(urgent_items) + " (가능한 한 빨리 진료 권장 수치)"
     elif danger_items:
         first = "먼저 확인할 항목: " + ", ".join(danger_items) + " (위험 범위에 해당하는 수치)"
 
@@ -435,8 +490,9 @@ def make_report_html(report_rows, judged, mets):
   ul {{ margin: 4px 0; padding-left: 18px; }}
 </style></head><body>
 <h1>건강검진 결과 해석 (교육용)</h1>
-<p class="small">만든 날짜: {now} (한국 시간)</p>
+<p class="small">만든 날짜: {now} (한국 시간){fasting_line}</p>
 <div class="box"><b>결과 요약</b>: 정상 {count['normal']}개 · 주의 {count['caution']}개 · 위험 {count['danger']}개<br>{e(first)}</div>
+<p class="small">의료진용 요약: {e(make_clinician_line(report_rows, mets))}</p>
 <h2>판정 결과</h2>
 <table><tr><th>항목</th><th>내 수치</th><th>판정</th></tr>{''.join(rows)}</table>
 {mets_html}
@@ -661,7 +717,14 @@ def show_all_results():
     if judged:
         show_summary(summary_box, judged)
 
-    # (8) 결과 파일 다운로드 버튼 (판정된 항목이 있을 때만)
+    # (8) 의료진용 한 줄 요약 (판정된 항목이 있을 때만, 복사 버튼 있음)
+    if judged:
+        with st.expander("의료진용 한 줄 요약"):
+            st.code(make_clinician_line(report_rows, mets), language=None, wrap_lines=True)
+            st.caption("단위: 혈압 mmHg, 혈당·지질 mg/dL. 진료 때 보여 주거나 복사해 쓸 수 있습니다. "
+                       "성별·나이는 넣지 않습니다.")
+
+    # (9) 결과 파일 다운로드 버튼 (판정된 항목이 있을 때만)
     if judged:
         st.download_button(
             "결과 파일 다운로드",
@@ -671,6 +734,7 @@ def show_all_results():
             width="stretch",
         )
         st.caption("내려받은 파일을 크롬이나 엣지로 열고 Ctrl+P를 누르면 인쇄하거나 PDF로 저장할 수 있습니다. "
+                   "휴대폰에서는 결과 화면을 캡처해 두는 편이 간편합니다. "
                    "성별·나이는 파일에 넣지 않습니다.")
 
 
@@ -715,7 +779,14 @@ tab_result, tab_check = st.tabs(["결과 해석", "검증 결과"])
 with tab_result:
     # 6-1. 안전 안내 (항상 보임)
     st.info("이 도구는 교육용이며 의학적 진단을 대신하지 않습니다.\n\n"
-            "19세 미만, 임산부는 기준이 달라 이용할 수 없습니다.")
+            "19세 미만, 임산부는 기준이 달라 이용할 수 없습니다.\n\n"
+            "약을 드시는 중이거나 당뇨병·심혈관질환 등이 있으면 같은 수치라도 의미가 다를 수 있습니다.")
+
+    # 6-1-1. 처음 쓰는 사람을 위한 짧은 사용 안내 (접어 둠)
+    with st.expander("처음이신가요? 사용 방법"):
+        st.markdown("1. 결과지의 수치를 아래 칸에 입력합니다. (나이는 꼭, 나머지는 있는 것만)\n"
+                    "2. **결과 보기**를 누르면 항목별 판정과 설명이 나옵니다.\n"
+                    "3. 예시 버튼으로 먼저 체험해 볼 수 있습니다.")
 
     # 6-2. 시연 버튼 3개 (휴대폰에서는 자동으로 세로로 쌓임)
     st.subheader("예시로 해 보기")
@@ -725,7 +796,7 @@ with tab_result:
 
     # 6-3. 입력칸
     st.subheader("내 검진 수치 입력")
-    st.radio("성별", ["남", "여"], index=None, horizontal=True, key="sex")
+    st.radio("성별 (허리둘레·대사증후군 판정에 필요)", ["남", "여"], index=None, horizontal=True, key="sex")
     if st.session_state["sex"] == "여":
         st.checkbox("임신 중입니다", key="pregnant")
 
@@ -744,6 +815,9 @@ with tab_result:
     with col2:
         number_box("dbp")
 
+    st.caption("공복혈당은 8시간 이상, 중성지방과 LDL(계산값)은 12시간(어려우면 최소 9시간) 이상 "
+               "공복 상태에서 잰 값을 기준으로 판정합니다.")
+    st.checkbox("공복이 아닌 상태에서 검사했어요", key="not_fasting")
     number_box("glucose")
     number_box("tc")
     number_box("ldl")
@@ -760,6 +834,7 @@ with tab_result:
     # 6-5. 결과 카드
     if st.session_state["show_result"]:
         st.subheader("결과")
+        st.checkbox("판정 근거(지침·쪽 번호) 함께 보기", key="show_basis")
         show_all_results()
 
     # 6-5-1. 용어 사전 (항상 보임)
